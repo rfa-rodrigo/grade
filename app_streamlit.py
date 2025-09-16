@@ -19,6 +19,7 @@ def ler_horarios_local(path: str = 'horarios.csv') -> pd.DataFrame:
     with open(path, 'rb') as f:
         csv_bytes = f.read()
     df = pd.read_csv(io.BytesIO(csv_bytes))
+
     # Normaliza colunas esperadas
     colmap = {c.lower().strip(): c for c in df.columns}
     needed = ['curso', 'disciplina', 'dia', 'inicio', 'fim']
@@ -36,15 +37,18 @@ def ler_horarios_local(path: str = 'horarios.csv') -> pd.DataFrame:
                 rename[colmap[a]] = key
                 break
     df = df.rename(columns=rename)
+
     missing = [k for k in needed if k not in df.columns]
     if missing:
         raise ValueError(f'Colunas ausentes no CSV: {missing}. Esperado: {needed}')
+
     # Normaliza dia
     df['dia'] = df['dia'].astype(str).str.lower().str.strip()
     df['dia_idx'] = df['dia'].map(DIA_MAP)
     if df['dia_idx'].isna().any():
         vals = sorted(df.loc[df['dia_idx'].isna(), 'dia'].unique())
         raise ValueError(f"Valores de 'dia' inválidos: {vals}. Use {list(DIA_MAP.keys())}")
+
     # Normaliza horário (HH:MM)
     def parse_hhmm(x):
         s = str(x).strip()
@@ -53,38 +57,61 @@ def ler_horarios_local(path: str = 'horarios.csv') -> pd.DataFrame:
                 return datetime.strptime(s, fmt).time()
             except Exception:
                 pass
+        # tenta 730 -> 07:30
         s_num = ''.join(ch for ch in s if ch.isdigit())
-        if len(s_num) in (3,4):
+        if len(s_num) in (3, 4):
             s_num = s_num.zfill(4)
             return time(int(s_num[:2]), int(s_num[2:]))
         raise ValueError(f'Horário inválido: {x}')
+
     df['inicio'] = df['inicio'].map(parse_hhmm)
     df['fim'] = df['fim'].map(parse_hhmm)
+
+    # sanity
     if (pd.Series([dt for dt in df['fim']]) <= pd.Series([dt for dt in df['inicio']])).any():
         raise ValueError('Há linhas com fim <= início.')
+
+    # Campos opcionais
     if 'sala' not in df.columns:
         df['sala'] = ''
     if 'professor' not in df.columns and 'docente' in df.columns:
         df = df.rename(columns={'docente': 'professor'})
     if 'professor' not in df.columns:
         df['professor'] = ''
+
     return df
 
 def gerar_slots(df: pd.DataFrame, passo_min=30):
-    min_inicio = min(df['inicio'])
-    max_fim = max(df['fim'])
+    """
+    Gera os slots da grade SEMPRE cobrindo 07:00–22:00,
+    independentemente dos horários existentes no CSV.
+    """
+    inicio_padrao = time(7, 0)   # 07:00
+    fim_padrao = time(22, 0)     # 22:00
+
+    # Caso queira que a grade se expanda além da janela padrão, substitua as duas linhas abaixo por:
+    # min_inicio = min(inicio_padrao, min(df["inicio"]))
+    # max_fim    = max(fim_padrao,    max(df["fim"]))
+    min_inicio = inicio_padrao
+    max_fim = fim_padrao
+
     def round_down(t: time, minutes=30):
         return time(t.hour, (t.minute // minutes) * minutes)
+
     def round_up(t: time, minutes=30):
         add = (minutes - (t.minute % minutes)) % minutes
-        hh = t.hour + (t.minute + add)//60
-        mm = (t.minute + add)%60
-        return time(min(hh, 23), mm)
+        hh = t.hour + (t.minute + add) // 60
+        mm = (t.minute + add) % 60
+        if hh > 23:
+            hh, mm = 23, 59
+        return time(hh, mm)
+
     start = round_down(min_inicio, passo_min)
     end = round_up(max_fim, passo_min)
+
     slots = []
-    cur = datetime(2000,1,1,start.hour,start.minute)
-    end_dt = datetime(2000,1,1,end.hour,end.minute)
+    cur = datetime(2000, 1, 1, start.hour, start.minute)
+    end_dt = datetime(2000, 1, 1, end.hour, end.minute)
     delta = timedelta(minutes=passo_min)
     while cur < end_dt:
         nxt = cur + delta
@@ -93,29 +120,35 @@ def gerar_slots(df: pd.DataFrame, passo_min=30):
     return slots
 
 def intervalo_conflita(a_ini: time, a_fim: time, b_ini: time, b_fim: time) -> bool:
+    # Sobreposição estrita: início < outro_fim e fim > outro_inicio
     return (a_ini < b_fim) and (a_fim > b_ini)
 
 def construir_quadro(selecionadas: pd.DataFrame, slots):
-    grade = { d: {i: [] for i in range(len(slots))} for d in range(6) }
+    grade = {d: {i: [] for i in range(len(slots))} for d in range(6)}  # segunda..sábado
     if selecionadas.empty:
         return grade, selecionadas
+
     selecionadas = selecionadas.copy()
     selecionadas['conflito'] = False
+
+    # Detecta conflitos no mesmo dia
     for d in range(6):
         dd = selecionadas[selecionadas['dia_idx'] == d].reset_index(drop=True)
         for i in range(len(dd)):
-            for j in range(i+1, len(dd)):
-                if intervalo_conflita(dd.loc[i,'inicio'], dd.loc[i,'fim'], dd.loc[j,'inicio'], dd.loc[j,'fim']):
+            for j in range(i + 1, len(dd)):
+                if intervalo_conflita(dd.loc[i, 'inicio'], dd.loc[i, 'fim'], dd.loc[j, 'inicio'], dd.loc[j, 'fim']):
                     selecionadas.loc[dd.index[i], 'conflito'] = True
                     selecionadas.loc[dd.index[j], 'conflito'] = True
+
+    # Preenche os slots
     for _, row in selecionadas.iterrows():
-        for k,(s_ini,s_fim) in enumerate(slots):
+        for k, (s_ini, s_fim) in enumerate(slots):
             if intervalo_conflita(row['inicio'], row['fim'], s_ini, s_fim):
                 grade[row['dia_idx']][k].append({
                     'curso': row['curso'],
                     'disciplina': row['disciplina'],
-                    'professor': row.get('professor',''),
-                    'sala': row.get('sala',''),
+                    'professor': row.get('professor', ''),
+                    'sala': row.get('sala', ''),
                     'inicio': row['inicio'].strftime('%H:%M'),
                     'fim': row['fim'].strftime('%H:%M'),
                     'conflito': bool(row['conflito']),
@@ -140,9 +173,9 @@ def renderizar_quadro(grade, slots):
     '''
     html = [css, "<table class='tbl'>"]
     html.append("<tr><th class='timecol'>Horário</th>" + "".join(f"<th>{lbl}</th>" for lbl in DIA_LABELS) + "</tr>")
-    for i,(t0,t1) in enumerate(slots):
+    for i, (t0, t1) in enumerate(slots):
         html.append('<tr>')
-        html.append(f"<td class='timecol'>{slot_label(t0,t1)}</td>")
+        html.append(f"<td class='timecol'>{slot_label(t0, t1)}</td>")
         for d in range(6):
             items = grade[d][i]
             if items:
@@ -165,17 +198,17 @@ def renderizar_quadro(grade, slots):
             html.append(f"<td class='slot'>{cell}</td>")
         html.append('</tr>')
     html.append('</table>')
-    st.markdown('\\n'.join(html), unsafe_allow_html=True)
+    st.markdown('\n'.join(html), unsafe_allow_html=True)
 
 # -------------------------------
 # App
 # -------------------------------
 st.title('Montador de grade e detector de conflitos - IFB')
 st.markdown(
-    '- Selecione o **Curso** e depois a **Disciplina** para adicioná-la ao quadro.\\n'
-    '- Disciplinas com **conflito de horário** aparecerão **em vermelho**.\\n'
-    '- Use os botões para **adicionar**, **remover a última adição** ou **limpar** o quadro.\\n'
-    '- Para atualizar a base a cada semestre, substitua o arquivo **horarios.csv** nesta pasta.'
+    "- Selecione o **Curso** e depois a **Disciplina** para adicioná-la ao quadro.\n"
+    "- Disciplinas com **conflito de horário** aparecerão **em vermelho**.\n"
+    "- Use os botões para **adicionar**, **remover a última adição** ou **limpar** o quadro.\n"
+    "- Para atualizar a base a cada semestre, substitua o arquivo **horarios.csv** nesta pasta."
 )
 
 # Leitura obrigatória do CSV local
@@ -188,16 +221,20 @@ except Exception as e:
     st.error(f'Erro ao ler `horarios.csv`: {e}')
     st.stop()
 
+# Slots sempre cobrindo 07:00–22:00
 slots = gerar_slots(df)
 
+# Estado
 if 'selecionadas' not in st.session_state:
     st.session_state['selecionadas'] = pd.DataFrame(columns=df.columns)
 
-left, right = st.columns([1,2], gap='large')
+# Layout: seleção à esquerda, quadro à direita
+left, right = st.columns([1, 2], gap='large')
 
 with left:
     cursos = sorted(df['curso'].unique())
     curso = st.selectbox('Curso', options=cursos, key='curso_select')
+
     dff = df[df['curso'] == curso].copy()
     disciplinas = sorted(dff['disciplina'].unique())
     disciplina = st.selectbox('Disciplina', options=disciplinas, key='disciplina_select')
@@ -225,18 +262,20 @@ with right:
 
 st.divider()
 
+# Resumo das disciplinas
 st.subheader('Resumo das disciplinas')
 show = sel_mar.copy() if not st.session_state['selecionadas'].empty else pd.DataFrame(columns=df.columns.tolist() + ['conflito'])
 if not show.empty:
-    show['dia'] = show['dia_idx'].map({i:n for i,n in enumerate(['Segunda','Terça','Quarta','Quinta','Sexta','Sábado'])})
+    show['dia'] = show['dia_idx'].map({i: n for i, n in enumerate(['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'])})
     show['inicio'] = show['inicio'].apply(lambda t: t.strftime('%H:%M'))
     show['fim'] = show['fim'].apply(lambda t: t.strftime('%H:%M'))
-    show = show[['curso','disciplina','professor','sala','dia','inicio','fim','conflito']].rename(columns={'conflito':'choque'})
+    show = show[['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'conflito']].rename(columns={'conflito': 'choque'})
 else:
-    show = pd.DataFrame(columns=['curso','disciplina','professor','sala','dia','inicio','fim','choque'])
+    show = pd.DataFrame(columns=['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'choque'])
 
 st.dataframe(show, use_container_width=True, hide_index=True)
 
+# Exportação do resumo
 if not show.empty:
     csv_out = show.to_csv(index=False).encode('utf-8')
     st.download_button('⬇️ Baixar resumo (CSV)', data=csv_out, file_name='quadro_selecionado.csv', mime='text/csv')
