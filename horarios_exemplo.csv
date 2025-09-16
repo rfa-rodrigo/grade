@@ -1,0 +1,12 @@
+curso,disciplina,dia,inicio,fim,sala,professor
+Engenharia Mecânica,Cálculo I,segunda,08:00,09:40,B-101,Prof. Newton
+Engenharia Mecânica,Cálculo I,quarta,08:00,09:40,B-101,Prof. Newton
+Engenharia Mecânica,Física I,terça,10:00,11:40,C-202,Prof. Maxwell
+Engenharia Mecânica,Física I,quinta,10:00,11:40,C-202,Prof. Maxwell
+Engenharia Mecânica,Prog. Python,terça,09:00,10:40,Lab 1,Profa. Ada
+Engenharia Mecânica,Prog. Python,quinta,09:00,10:40,Lab 1,Profa. Ada
+Automotiva,Motores I,segunda,08:30,10:10,Oficina,Prof. Otto
+Automotiva,Motores I,quarta,08:30,10:10,Oficina,Prof. Otto
+Automotiva,Transmissões,terça,09:30,11:10,Oficina,Prof. Zahnrad
+Automotiva,Transmissões,quinta,09:30,11:10,Oficina,Prof. Zahnrad
+Engenharia Mecânica,Cálculo I (extra),terça,09:00,10:00,B-101,Prof. Newton
