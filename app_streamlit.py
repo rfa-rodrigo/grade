@@ -87,7 +87,7 @@ def gerar_slots(df: pd.DataFrame, passo_min=30):
     independentemente dos horários existentes no CSV.
     """
     inicio_padrao = time(7, 0)   # 07:00
-    fim_padrao = time(22, 0)     # 22:00
+    fim_padrao = time(22, 10)     # 22:00
 
     # Caso queira que a grade se expanda além da janela padrão, substitua as duas linhas abaixo por:
     # min_inicio = min(inicio_padrao, min(df["inicio"]))
