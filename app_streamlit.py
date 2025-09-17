@@ -269,9 +269,42 @@ with left:
 
     # Botão "Imprimir PDF" (habilitado apenas se não houver conflitos)
     imprimir_habilitado = tem_disciplinas and not tem_conflito
-    if st.button('🖨️ Imprimir PDF', disabled=not imprimir_habilitado):
-        # Dispara a impressão do navegador
-        components.html("<script>window.print()</script>", height=0, width=0)
+    if st.button('🖨️ Imprimir PDF', disabled=not imprimir_habilitado, key='btn-imprimir'):
+        # Construir HTML de impressão com a grade atual + resumo
+        # A grade HTML será gerada abaixo (na coluna da direita) e guardada em session_state
+        grade_html_to_print = st.session_state.get('grade_html', '')
+        # Monta resumo em DataFrame simples para impressão
+        resumo_df = None
+        if tem_disciplinas:
+            resumo_df = sel_mar_local.copy()
+            resumo_df['dia'] = resumo_df['dia_idx'].map({i: n for i, n in enumerate(['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'])})
+            resumo_df['inicio'] = resumo_df['inicio'].apply(lambda t: t.strftime('%H:%M'))
+            resumo_df['fim'] = resumo_df['fim'].apply(lambda t: t.strftime('%H:%M'))
+            resumo_df = resumo_df[['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'conflito']]
+
+        print_html = build_print_html(grade_html_to_print, resumo_df)
+        # Usa uma key única a cada clique para permitir reimprimir quantas vezes for necessário
+        components.html(
+            f"""
+            <script>
+            (function(){{
+              const html = {json.dumps(print_html)};
+              const w = window.open('', '_blank');
+              w.document.open();
+              w.document.write(html);
+              w.document.close();
+              w.focus();
+            }})();
+            </script>
+            """,
+            height=0, width=0, key=f"print-{uuid4()}"
+        )
+        
+    # Botão "Imprimir PDF" (habilitado apenas se não houver conflitos)
+    #imprimir_habilitado = tem_disciplinas and not tem_conflito
+    #if st.button('🖨️ Imprimir PDF', disabled=not imprimir_habilitado):
+    #    # Dispara a impressão do navegador
+    #    components.html("<script>window.print()</script>", height=0, width=0)
 
 with right:
     st.subheader('Quadro de horários')
