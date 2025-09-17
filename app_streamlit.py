@@ -328,14 +328,17 @@ with left:
 
     # Se clicado e sem conflitos: gera e exibe botão de download
     if gerar_pdf and tem_disciplinas and not tem_conflito:
-        # Prepara DataFrame 'show' (igual ao resumo exibido no app)
+        # Prepara DataFrame para o PDF (mantendo 'dia_idx' para ordenação)
         show_pdf = sel_mar_local.copy()
         show_pdf['dia'] = show_pdf['dia_idx'].map({i: n for i, n in enumerate(['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'])})
         show_pdf['inicio'] = show_pdf['inicio'].apply(lambda t: t.strftime('%H:%M'))
         show_pdf['fim'] = show_pdf['fim'].apply(lambda t: t.strftime('%H:%M'))
-        show_pdf = show_pdf[['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'conflito']]
-
+        
+        # >>> NÃO remova 'dia_idx' aqui <<<
+        show_pdf = show_pdf[['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'conflito', 'dia_idx']]
+        
         pdf_bytes = pdf_da_selecao(show_pdf)
+
 
         st.download_button(
             label='⬇️ Baixar PDF da grade',
