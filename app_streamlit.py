@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 from datetime import datetime, time, timedelta
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title='Montador de grade e detector de conflitos - IFB', layout='wide')
 
@@ -87,11 +88,8 @@ def gerar_slots(df: pd.DataFrame, passo_min=30):
     independentemente dos horários existentes no CSV.
     """
     inicio_padrao = time(7, 0)   # 07:00
-    fim_padrao = time(22, 10)     # 22:00
+    fim_padrao = time(22, 0)     # 22:00
 
-    # Caso queira que a grade se expanda além da janela padrão, substitua as duas linhas abaixo por:
-    # min_inicio = min(inicio_padrao, min(df["inicio"]))
-    # max_fim    = max(fim_padrao,    max(df["fim"]))
     min_inicio = inicio_padrao
     max_fim = fim_padrao
 
@@ -243,6 +241,7 @@ with left:
         linhas = dff[dff['disciplina'] == disciplina].copy()
         st.session_state['selecionadas'] = pd.concat([st.session_state['selecionadas'], linhas], ignore_index=True)
 
+    # Linha de botões: Remover última e Limpar
     colb1, colb2 = st.columns(2)
     with colb1:
         if st.button('🗑️ Remover última adição'):
@@ -254,6 +253,25 @@ with left:
     with colb2:
         if st.button('🧹 Limpar quadro'):
             st.session_state['selecionadas'] = pd.DataFrame(columns=df.columns)
+
+    # Avalia conflitos para controlar o botão de impressão
+    _, sel_mar_local = construir_quadro(st.session_state['selecionadas'], slots)
+    tem_disciplinas = not sel_mar_local.empty
+    tem_conflito = tem_disciplinas and bool(sel_mar_local['conflito'].any())
+
+    # Mensagem e botão (lateral, abaixo de Remover última adição)
+    if tem_disciplinas and not tem_conflito:
+        st.success('Grade montada sem conflito de disciplinas.')
+    elif tem_disciplinas and tem_conflito:
+        st.error('Grade com conflitos. Não será permitida a matrícula.')
+    else:
+        st.info('Adicione disciplinas para montar a grade.')
+
+    # Botão "Imprimir PDF" (habilitado apenas se não houver conflitos)
+    imprimir_habilitado = tem_disciplinas and not tem_conflito
+    if st.button('🖨️ Imprimir PDF', disabled=not imprimir_habilitado):
+        # Dispara a impressão do navegador
+        components.html("<script>window.print()</script>", height=0, width=0)
 
 with right:
     st.subheader('Quadro de horários')
@@ -274,8 +292,3 @@ else:
     show = pd.DataFrame(columns=['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'choque'])
 
 st.dataframe(show, use_container_width=True, hide_index=True)
-
-# Exportação do resumo
-if not show.empty:
-    csv_out = show.to_csv(index=False).encode('utf-8')
-    st.download_button('⬇️ Baixar resumo (CSV)', data=csv_out, file_name='quadro_selecionado.csv', mime='text/csv')
