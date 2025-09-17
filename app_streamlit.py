@@ -3,6 +3,8 @@ import pandas as pd
 import io
 from datetime import datetime, time, timedelta
 import streamlit.components.v1 as components
+import json
+from uuid import uuid4
 
 st.set_page_config(page_title='Montador de grade e detector de conflitos - IFB', layout='wide')
 
@@ -153,7 +155,8 @@ def construir_quadro(selecionadas: pd.DataFrame, slots):
                 })
     return grade, selecionadas
 
-def renderizar_quadro(grade, slots):
+def renderizar_quadro(grade, slots, render=True):
+    """Gera o HTML da grade e opcionalmente renderiza no Streamlit."""
     def slot_label(t0: time, t1: time):
         return f"{t0.strftime('%H:%M')}–{t1.strftime('%H:%M')}"
     css = '''
@@ -196,17 +199,113 @@ def renderizar_quadro(grade, slots):
             html.append(f"<td class='slot'>{cell}</td>")
         html.append('</tr>')
     html.append('</table>')
-    st.markdown('\n'.join(html), unsafe_allow_html=True)
+    html_str = '\n'.join(html)
+    if render:
+        st.markdown(html_str, unsafe_allow_html=True)
+    return html_str
+
+def build_print_html(grade_html: str, resumo_df: pd.DataFrame) -> str:
+    """Gera uma página HTML independente para impressão (paisagem + fit-to-page)."""
+    # Tabela do resumo em HTML simples
+    if resumo_df is None or resumo_df.empty:
+        resumo_html = "<p><em>Nenhuma disciplina adicionada.</em></p>"
+    else:
+        # Renomeia a coluna de conflito para 'choque' (se necessário)
+        cols = list(resumo_df.columns)
+        resumo_show = resumo_df.copy()
+        if 'conflito' in cols and 'choque' not in cols:
+            resumo_show = resumo_show.rename(columns={'conflito': 'choque'})
+        resumo_html = resumo_show.to_html(index=False, border=0, classes='resumo')
+
+    now_str = datetime.now().strftime('%d/%m/%Y %H:%M')
+
+    # CSS de impressão (A4 landscape, margens, ajuste de escala automático via JS)
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Grade - IFB</title>
+<style>
+  @page {{
+    size: A4 landscape;
+    margin: 10mm;
+  }}
+  html, body {{
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    font-family: Arial, Helvetica, sans-serif;
+  }}
+  .print-wrapper {{
+    width: 100%;
+  }}
+  h1 {{ margin: 0 0 6px 0; font-size: 20px; }}
+  .meta-print {{ font-size: 12px; margin: 0 0 12px 0; color: #333; }}
+  /* Reaproveita estilos da grade */
+  .tbl {{ width:100%; border-collapse: collapse; table-layout: fixed; }}
+  .tbl th, .tbl td {{ border:1px solid #ddd; padding:6px; vertical-align: top; font-size: 11px; }}
+  .tbl th {{ background:#f5f5f5; }}
+  .slot {{ min-height: 40px; }}
+  .chip {{ display:block; margin:2px 0; padding:3px 5px; border-radius:6px; border:1px solid #999; background:#fafafa; }}
+  .chip.conflict {{ background:#ffe5e5; border-color:#ff6666; }}
+  .chip .title {{ font-weight:600; }}
+  .chip .meta {{ font-size:10px; opacity:0.8; }}
+  .timecol {{ width: 100px; background:#fcfcfc; font-weight:600; }}
+
+  h2 {{ margin-top: 14px; font-size: 16px; }}
+  table.resumo {{
+    border-collapse: collapse; width: 100%;
+    font-size: 11px;
+  }}
+  table.resumo th, table.resumo td {{
+    border: 1px solid #ddd; padding: 6px; text-align: left;
+  }}
+
+  /* Evita quebras estranhas */
+  tr, td, th {{ page-break-inside: avoid; }}
+</style>
+</head>
+<body>
+<div class="print-wrapper" id="content">
+  <h1>Montador de grade e detector de conflitos - IFB</h1>
+  <p class="meta-print">Emitido em: {now_str}</p>
+  {grade_html}
+  <h2>Resumo das disciplinas</h2>
+  {resumo_html}
+</div>
+
+<script>
+  // Ajuste automático para "caber em 1 página" (paisagem).
+  // Mede a altura do conteúdo e, se maior que a janela de impressão, aplica escala.
+  window.onload = function() {{
+    try {{
+      const el = document.getElementById('content');
+      // margem de segurança
+      const pageH = window.innerHeight - 20;
+      const contentH = el.scrollHeight;
+      const scale = Math.min(1, pageH / contentH);
+      if (scale < 1) {{
+        el.style.transform = 'scale(' + scale + ')';
+        el.style.transformOrigin = 'top left';
+      }}
+    }} catch (e) {{}}
+    setTimeout(function() {{
+      window.print();
+      window.close();
+    }}, 300);
+  }};
+</script>
+</body>
+</html>"""
 
 # -------------------------------
 # App
 # -------------------------------
 st.title('Montador de grade e detector de conflitos - IFB')
 st.markdown(
-    "- Selecione o **Curso** e depois a **Disciplina** para adicioná-la ao quadro.\n"
-    "- Disciplinas com **conflito de horário** aparecerão **em vermelho**.\n"
-    "- Use os botões para **adicionar**, **remover a última adição** ou **limpar** o quadro.\n"
-    "- Para atualizar a base a cada semestre, substitua o arquivo **horarios.csv** nesta pasta."
+    "Selecione o **Curso** e depois a **Disciplina** para adicioná-la ao quadro.\n"
+    "Disciplinas com **conflito de horário** aparecerão **em vermelho**.\n"
+    "Use os botões para **adicionar**, **remover a última adição** ou **limpar** o quadro.\n"
+    "Para atualizar a base a cada semestre, substitua o arquivo **horarios.csv** nesta pasta."
 )
 
 # Leitura obrigatória do CSV local
@@ -299,21 +398,17 @@ with left:
             """,
             height=0, width=0, key=f"print-{uuid4()}"
         )
-        
-    # Botão "Imprimir PDF" (habilitado apenas se não houver conflitos)
-    #imprimir_habilitado = tem_disciplinas and not tem_conflito
-    #if st.button('🖨️ Imprimir PDF', disabled=not imprimir_habilitado):
-    #    # Dispara a impressão do navegador
-    #    components.html("<script>window.print()</script>", height=0, width=0)
 
 with right:
     st.subheader('Quadro de horários')
     grade, sel_mar = construir_quadro(st.session_state['selecionadas'], slots)
-    renderizar_quadro(grade, slots)
+    # Renderiza e guarda o HTML da grade para impressão
+    grade_html = renderizar_quadro(grade, slots, render=True)
+    st.session_state['grade_html'] = grade_html
 
 st.divider()
 
-# Resumo das disciplinas
+# Resumo das disciplinas (na página do app)
 st.subheader('Resumo das disciplinas')
 show = sel_mar.copy() if not st.session_state['selecionadas'].empty else pd.DataFrame(columns=df.columns.tolist() + ['conflito'])
 if not show.empty:
