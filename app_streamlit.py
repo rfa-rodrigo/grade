@@ -3,7 +3,6 @@ import pandas as pd
 import io
 from datetime import datetime, time, timedelta
 from fpdf import FPDF  # pip install fpdf
-import base64
 
 st.set_page_config(page_title='Montador de grade e detector de conflitos - IFB', layout='wide')
 
@@ -200,7 +199,7 @@ def renderizar_quadro(grade, slots):
     st.markdown('\n'.join(html), unsafe_allow_html=True)
 
 # -------------------------------
-# Geração de PDF
+# Utilitários PDF
 # -------------------------------
 def _latin1(s: str) -> str:
     """Converte para latin-1 com fallback, para não quebrar o fpdf."""
@@ -210,41 +209,64 @@ def _latin1(s: str) -> str:
 
 def pdf_da_selecao(sel_df: pd.DataFrame) -> bytes:
     """
-    Gera PDF (A4 paisagem) com cabeçalho, data e tabela Resumo das disciplinas
-    a partir da seleção (sem conflitos).
+    Gera PDF (A4 paisagem) com cabeçalho, data, tabela Resumo das disciplinas,
+    mensagem 'Grade gerada e conferida' e campos para nome/assinatura.
+    Robusta quanto à ausência de 'dia_idx'.
     """
     pdf = FPDF(orientation='L', unit='mm', format='A4')
-    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
+
+    # Cabeçalho
     pdf.set_font('Arial', 'B', 16)
     pdf.cell(0, 10, _latin1('Montador de grade e detector de conflitos - IFB'), ln=True)
     pdf.set_font('Arial', '', 11)
-    pdf.cell(0, 8, _latin1(f'Emitido em: {datetime.now().strftime("%d/%m/%Y %H:%M")}'), ln=True)
+    pdf.cell(0, 7, _latin1(f'Emitido em: {datetime.now().strftime("%d/%m/%Y %H:%M")}'), ln=True)
     pdf.ln(2)
 
     # Cabeçalho da tabela
     pdf.set_font('Arial', 'B', 11)
     headers = ['Dia', 'Início', 'Fim', 'Curso', 'Disciplina', 'Sala', 'Professor']
-    # Larguras aproximadas somando ~277mm de área útil (A4L com ~10mm margens)
+    # Larguras aproximadas somando ~277mm de área útil (A4L, ~10-12mm margens)
     col_w = [22, 18, 18, 55, 95, 30, 35]
     for h, w in zip(headers, col_w):
         pdf.cell(w, 8, _latin1(h), border=1, align='L')
     pdf.ln(8)
 
-    # Linhas (ordenadas por dia_idx, inicio)
+    # Preparação/ordenação robusta
     pdf.set_font('Arial', '', 10)
     dias = {i: n for i, n in enumerate(['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'])}
-    temp = sel_df.copy()
-    temp['__inicio_sort__'] = pd.to_datetime(temp['inicio'], format='%H:%M', errors='coerce')
-    temp = temp.sort_values(['dia_idx', '__inicio_sort__', 'disciplina', 'curso'], kind='stable')
 
+    temp = sel_df.copy()
+
+    # Se não tiver dia_idx, tenta derivar a partir de 'dia'
+    if 'dia_idx' not in temp.columns and 'dia' in temp.columns:
+        rev = {'segunda':0,'terca':1,'terça':1,'quarta':2,'quinta':3,'sexta':4,'sabado':5,'sábado':5}
+        temp['dia_idx'] = temp['dia'].astype(str).str.lower().map(rev)
+
+    # Garante uma coluna de ordenação por horário
+    if 'inicio' in temp.columns:
+        if pd.api.types.is_datetime64_any_dtype(temp['inicio']):
+            temp['__inicio_sort__'] = temp['inicio']
+        else:
+            temp['__inicio_sort__'] = pd.to_datetime(temp['inicio'], format='%H:%M', errors='coerce')
+    else:
+        temp['__inicio_sort__'] = pd.NaT
+
+    sort_cols = ['disciplina', 'curso']
+    if 'dia_idx' in temp.columns:
+        sort_cols = ['dia_idx', '__inicio_sort__', 'disciplina', 'curso']
+    temp = temp.sort_values(sort_cols, kind='stable')
+
+    # Linhas
     for _, r in temp.iterrows():
+        dia_nome = dias.get(int(r['dia_idx'])) if 'dia_idx' in temp.columns and pd.notna(r.get('dia_idx')) else str(r.get('dia', ''))
         row_vals = [
-            dias.get(int(r['dia_idx']), ''),
-            str(r['inicio']),
-            str(r['fim']),
-            str(r['curso']),
-            str(r['disciplina']),
+            dia_nome,
+            str(r.get('inicio', '')),
+            str(r.get('fim', '')),
+            str(r.get('curso', '')),
+            str(r.get('disciplina', '')),
             str(r.get('sala', '')),
             str(r.get('professor', '')),
         ]
@@ -252,7 +274,26 @@ def pdf_da_selecao(sel_df: pd.DataFrame) -> bytes:
             pdf.cell(w, 7, _latin1(val), border=1, align='L')
         pdf.ln(7)
 
-    # Retorna bytes
+    # Mensagem "Grade gerada e conferida"
+    pdf.ln(6)
+    pdf.set_font('Arial', 'B', 12)
+    pdf.cell(0, 8, _latin1('Grade gerada e conferida'), ln=True, align='C')
+    pdf.ln(4)
+
+    # Linha para nome do aluno e assinatura
+    pdf.set_font('Arial', '', 11)
+    # Nome
+    pdf.cell(40, 8, _latin1('Nome do aluno:'), ln=0)
+    x = pdf.get_x(); y = pdf.get_y()
+    pdf.line(x, y + 7, x + 120, y + 7)  # linha
+    pdf.ln(12)
+
+    # Assinatura
+    pdf.cell(30, 8, _latin1('Assinatura:'), ln=0)
+    x = pdf.get_x(); y = pdf.get_y()
+    pdf.line(x, y + 7, x + 120, y + 7)  # linha
+    pdf.ln(4)
+
     return pdf.output(dest='S').encode('latin-1')
 
 # -------------------------------
@@ -311,7 +352,7 @@ with left:
         if st.button('🧹 Limpar quadro'):
             st.session_state['selecionadas'] = pd.DataFrame(columns=df.columns)
 
-    # Avalia conflitos para controlar o PDF
+    # Avalia conflitos para controlar PDF
     _, sel_mar_local = construir_quadro(st.session_state['selecionadas'], slots)
     tem_disciplinas = not sel_mar_local.empty
     tem_conflito = tem_disciplinas and bool(sel_mar_local['conflito'].any())
@@ -326,19 +367,15 @@ with left:
     # Botão "Gerar PDF" (habilitado apenas se não houver conflitos)
     gerar_pdf = st.button('🖨️ Gerar PDF (A4 paisagem)', disabled=not (tem_disciplinas and not tem_conflito))
 
-    # Se clicado e sem conflitos: gera e exibe botão de download
+    # Se clicado e sem conflitos: gera e oferece o download
     if gerar_pdf and tem_disciplinas and not tem_conflito:
-        # Prepara DataFrame para o PDF (mantendo 'dia_idx' para ordenação)
+        # Monta DataFrame para o PDF (sem remover 'dia_idx'; função é robusta mesmo se faltar)
         show_pdf = sel_mar_local.copy()
-        show_pdf['dia'] = show_pdf['dia_idx'].map({i: n for i, n in enumerate(['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'])})
+        # Normaliza visual dos campos de hora
         show_pdf['inicio'] = show_pdf['inicio'].apply(lambda t: t.strftime('%H:%M'))
         show_pdf['fim'] = show_pdf['fim'].apply(lambda t: t.strftime('%H:%M'))
-        
-        # >>> NÃO remova 'dia_idx' aqui <<<
-        show_pdf = show_pdf[['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'conflito', 'dia_idx']]
-        
-        pdf_bytes = pdf_da_selecao(show_pdf)
 
+        pdf_bytes = pdf_da_selecao(show_pdf)
 
         st.download_button(
             label='⬇️ Baixar PDF da grade',
