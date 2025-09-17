@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 import io
 from datetime import datetime, time, timedelta
-import streamlit.components.v1 as components
-import json
-from uuid import uuid4
+from fpdf import FPDF  # pip install fpdf
+import base64
 
 st.set_page_config(page_title='Montador de grade e detector de conflitos - IFB', layout='wide')
 
@@ -155,8 +154,7 @@ def construir_quadro(selecionadas: pd.DataFrame, slots):
                 })
     return grade, selecionadas
 
-def renderizar_quadro(grade, slots, render=True):
-    """Gera o HTML da grade e opcionalmente renderiza no Streamlit."""
+def renderizar_quadro(grade, slots):
     def slot_label(t0: time, t1: time):
         return f"{t0.strftime('%H:%M')}–{t1.strftime('%H:%M')}"
     css = '''
@@ -199,103 +197,63 @@ def renderizar_quadro(grade, slots, render=True):
             html.append(f"<td class='slot'>{cell}</td>")
         html.append('</tr>')
     html.append('</table>')
-    html_str = '\n'.join(html)
-    if render:
-        st.markdown(html_str, unsafe_allow_html=True)
-    return html_str
+    st.markdown('\n'.join(html), unsafe_allow_html=True)
 
-def build_print_html(grade_html: str, resumo_df: pd.DataFrame) -> str:
-    """Gera uma página HTML independente para impressão (paisagem + fit-to-page)."""
-    # Tabela do resumo em HTML simples
-    if resumo_df is None or resumo_df.empty:
-        resumo_html = "<p><em>Nenhuma disciplina adicionada.</em></p>"
-    else:
-        # Renomeia a coluna de conflito para 'choque' (se necessário)
-        cols = list(resumo_df.columns)
-        resumo_show = resumo_df.copy()
-        if 'conflito' in cols and 'choque' not in cols:
-            resumo_show = resumo_show.rename(columns={'conflito': 'choque'})
-        resumo_html = resumo_show.to_html(index=False, border=0, classes='resumo')
+# -------------------------------
+# Geração de PDF
+# -------------------------------
+def _latin1(s: str) -> str:
+    """Converte para latin-1 com fallback, para não quebrar o fpdf."""
+    if s is None:
+        return ''
+    return s.encode('latin-1', 'replace').decode('latin-1')
 
-    now_str = datetime.now().strftime('%d/%m/%Y %H:%M')
+def pdf_da_selecao(sel_df: pd.DataFrame) -> bytes:
+    """
+    Gera PDF (A4 paisagem) com cabeçalho, data e tabela Resumo das disciplinas
+    a partir da seleção (sem conflitos).
+    """
+    pdf = FPDF(orientation='L', unit='mm', format='A4')
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, _latin1('Montador de grade e detector de conflitos - IFB'), ln=True)
+    pdf.set_font('Arial', '', 11)
+    pdf.cell(0, 8, _latin1(f'Emitido em: {datetime.now().strftime("%d/%m/%Y %H:%M")}'), ln=True)
+    pdf.ln(2)
 
-    # CSS de impressão (A4 landscape, margens, ajuste de escala automático via JS)
-    return f"""<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<title>Grade - IFB</title>
-<style>
-  @page {{
-    size: A4 landscape;
-    margin: 10mm;
-  }}
-  html, body {{
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-    font-family: Arial, Helvetica, sans-serif;
-  }}
-  .print-wrapper {{
-    width: 100%;
-  }}
-  h1 {{ margin: 0 0 6px 0; font-size: 20px; }}
-  .meta-print {{ font-size: 12px; margin: 0 0 12px 0; color: #333; }}
-  /* Reaproveita estilos da grade */
-  .tbl {{ width:100%; border-collapse: collapse; table-layout: fixed; }}
-  .tbl th, .tbl td {{ border:1px solid #ddd; padding:6px; vertical-align: top; font-size: 11px; }}
-  .tbl th {{ background:#f5f5f5; }}
-  .slot {{ min-height: 40px; }}
-  .chip {{ display:block; margin:2px 0; padding:3px 5px; border-radius:6px; border:1px solid #999; background:#fafafa; }}
-  .chip.conflict {{ background:#ffe5e5; border-color:#ff6666; }}
-  .chip .title {{ font-weight:600; }}
-  .chip .meta {{ font-size:10px; opacity:0.8; }}
-  .timecol {{ width: 100px; background:#fcfcfc; font-weight:600; }}
+    # Cabeçalho da tabela
+    pdf.set_font('Arial', 'B', 11)
+    headers = ['Dia', 'Início', 'Fim', 'Curso', 'Disciplina', 'Sala', 'Professor']
+    # Larguras aproximadas somando ~277mm de área útil (A4L com ~10mm margens)
+    col_w = [22, 18, 18, 55, 95, 30, 35]
+    for h, w in zip(headers, col_w):
+        pdf.cell(w, 8, _latin1(h), border=1, align='L')
+    pdf.ln(8)
 
-  h2 {{ margin-top: 14px; font-size: 16px; }}
-  table.resumo {{
-    border-collapse: collapse; width: 100%;
-    font-size: 11px;
-  }}
-  table.resumo th, table.resumo td {{
-    border: 1px solid #ddd; padding: 6px; text-align: left;
-  }}
+    # Linhas (ordenadas por dia_idx, inicio)
+    pdf.set_font('Arial', '', 10)
+    dias = {i: n for i, n in enumerate(['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'])}
+    temp = sel_df.copy()
+    temp['__inicio_sort__'] = pd.to_datetime(temp['inicio'], format='%H:%M', errors='coerce')
+    temp = temp.sort_values(['dia_idx', '__inicio_sort__', 'disciplina', 'curso'], kind='stable')
 
-  /* Evita quebras estranhas */
-  tr, td, th {{ page-break-inside: avoid; }}
-</style>
-</head>
-<body>
-<div class="print-wrapper" id="content">
-  <h1>Montador de grade e detector de conflitos - IFB</h1>
-  <p class="meta-print">Emitido em: {now_str}</p>
-  {grade_html}
-  <h2>Resumo das disciplinas</h2>
-  {resumo_html}
-</div>
+    for _, r in temp.iterrows():
+        row_vals = [
+            dias.get(int(r['dia_idx']), ''),
+            str(r['inicio']),
+            str(r['fim']),
+            str(r['curso']),
+            str(r['disciplina']),
+            str(r.get('sala', '')),
+            str(r.get('professor', '')),
+        ]
+        for val, w in zip(row_vals, col_w):
+            pdf.cell(w, 7, _latin1(val), border=1, align='L')
+        pdf.ln(7)
 
-<script>
-  // Ajuste automático para "caber em 1 página" (paisagem).
-  // Mede a altura do conteúdo e, se maior que a janela de impressão, aplica escala.
-  window.onload = function() {{
-    try {{
-      const el = document.getElementById('content');
-      // margem de segurança
-      const pageH = window.innerHeight - 20;
-      const contentH = el.scrollHeight;
-      const scale = Math.min(1, pageH / contentH);
-      if (scale < 1) {{
-        el.style.transform = 'scale(' + scale + ')';
-        el.style.transformOrigin = 'top left';
-      }}
-    }} catch (e) {{}}
-    setTimeout(function() {{
-      window.print();
-      window.close();
-    }}, 300);
-  }};
-</script>
-</body>
-</html>"""
+    # Retorna bytes
+    return pdf.output(dest='S').encode('latin-1')
 
 # -------------------------------
 # App
@@ -353,25 +311,44 @@ with left:
         if st.button('🧹 Limpar quadro'):
             st.session_state['selecionadas'] = pd.DataFrame(columns=df.columns)
 
-    # Avalia conflitos para controlar o botão de impressão
+    # Avalia conflitos para controlar o PDF
     _, sel_mar_local = construir_quadro(st.session_state['selecionadas'], slots)
     tem_disciplinas = not sel_mar_local.empty
     tem_conflito = tem_disciplinas and bool(sel_mar_local['conflito'].any())
 
-    # Mensagem e botão (lateral, abaixo de Remover última adição)
     if tem_disciplinas and not tem_conflito:
-        st.success('Grade montada sem conflito de disciplinas. Imprima essa página e encaminhe ao CDRA.')
+        st.success('Grade montada sem conflito de disciplinas.')
     elif tem_disciplinas and tem_conflito:
         st.error('Grade com conflitos. Não será permitida a matrícula.')
     else:
         st.info('Adicione disciplinas para montar a grade.')
 
+    # Botão "Gerar PDF" (habilitado apenas se não houver conflitos)
+    gerar_pdf = st.button('🖨️ Gerar PDF (A4 paisagem)', disabled=not (tem_disciplinas and not tem_conflito))
+
+    # Se clicado e sem conflitos: gera e exibe botão de download
+    if gerar_pdf and tem_disciplinas and not tem_conflito:
+        # Prepara DataFrame 'show' (igual ao resumo exibido no app)
+        show_pdf = sel_mar_local.copy()
+        show_pdf['dia'] = show_pdf['dia_idx'].map({i: n for i, n in enumerate(['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'])})
+        show_pdf['inicio'] = show_pdf['inicio'].apply(lambda t: t.strftime('%H:%M'))
+        show_pdf['fim'] = show_pdf['fim'].apply(lambda t: t.strftime('%H:%M'))
+        show_pdf = show_pdf[['curso', 'disciplina', 'professor', 'sala', 'dia', 'inicio', 'fim', 'conflito']]
+
+        pdf_bytes = pdf_da_selecao(show_pdf)
+
+        st.download_button(
+            label='⬇️ Baixar PDF da grade',
+            data=pdf_bytes,
+            file_name='grade_ifb.pdf',
+            mime='application/pdf',
+            use_container_width=True
+        )
+
 with right:
     st.subheader('Quadro de horários')
     grade, sel_mar = construir_quadro(st.session_state['selecionadas'], slots)
-    # Renderiza e guarda o HTML da grade para impressão
-    grade_html = renderizar_quadro(grade, slots, render=True)
-    st.session_state['grade_html'] = grade_html
+    renderizar_quadro(grade, slots)
 
 st.divider()
 
